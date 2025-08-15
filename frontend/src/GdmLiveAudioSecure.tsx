@@ -1,0 +1,409 @@
+import React, { useState, useEffect, useRef } from 'react';
+
+const GdmLiveAudioSecure: React.FC = () => {
+  const [isRecording, setIsRecording] = useState(false);
+  const [isConnected, setIsConnected] = useState(false);
+  const [status, setStatus] = useState('Disconnected');
+  const [error, setError] = useState('');
+  const [realtimeTranscription, setRealtimeTranscription] = useState('');
+  const [correctedTranscription, setCorrectedTranscription] = useState('');
+  const [showRealtime, setShowRealtime] = useState(true);
+  
+  const wsRef = useRef<WebSocket | null>(null);
+  const inputAudioContextRef = useRef(new (window.AudioContext ||
+    (window as any).webkitAudioContext)({sampleRate: 16000}));
+  const mediaStreamRef = useRef<MediaStream | undefined>();
+  const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const scriptProcessorNodeRef = useRef<ScriptProcessorNode | null>(null);
+  const transcriptionChunks = useRef<Map<number, string>>(new Map());
+
+  // Styles - Simple greyscale
+  const containerStyle: React.CSSProperties = {
+    background: '#f5f5f5',
+    color: '#333',
+    minHeight: '100vh',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    padding: '40px 20px',
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+  };
+
+  const titleStyle: React.CSSProperties = {
+    fontSize: '32px',
+    fontWeight: '300',
+    marginBottom: '30px',
+    color: '#222',
+  };
+
+  const statusStyle: React.CSSProperties = {
+    fontSize: '14px',
+    color: '#666',
+    marginBottom: '20px',
+  };
+
+  const buttonRowStyle: React.CSSProperties = {
+    display: 'flex',
+    gap: '20px',
+    marginBottom: '40px',
+  };
+
+  const buttonStyle: React.CSSProperties = {
+    padding: '12px 24px',
+    background: '#fff',
+    color: '#333',
+    border: '1px solid #ccc',
+    borderRadius: '4px',
+    fontSize: '14px',
+    cursor: 'pointer',
+    transition: 'all 0.2s',
+  };
+
+  const recordButtonStyle: React.CSSProperties = {
+    width: '80px',
+    height: '80px',
+    borderRadius: '50%',
+    background: isRecording ? '#666' : '#fff',
+    color: isRecording ? '#fff' : '#333',
+    border: '2px solid #333',
+    cursor: isConnected ? 'pointer' : 'not-allowed',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: '20px',
+    opacity: isConnected ? 1 : 0.4,
+  };
+
+  const transcriptionContainerStyle: React.CSSProperties = {
+    width: '100%',
+    maxWidth: '800px',
+  };
+
+  const tabStyle: React.CSSProperties = {
+    display: 'flex',
+    gap: '10px',
+    marginBottom: '10px',
+  };
+
+  const tabButtonStyle = (active: boolean): React.CSSProperties => ({
+    padding: '8px 16px',
+    background: active ? '#333' : '#fff',
+    color: active ? '#fff' : '#333',
+    border: '1px solid #333',
+    borderRadius: '4px 4px 0 0',
+    fontSize: '14px',
+    cursor: 'pointer',
+  });
+
+  const transcriptionBoxStyle: React.CSSProperties = {
+    background: '#fff',
+    border: '1px solid #ddd',
+    borderRadius: '0 4px 4px 4px',
+    padding: '20px',
+    height: '400px',
+    overflowY: 'auto',
+    fontSize: '18px',
+    lineHeight: '1.6',
+    color: '#333',
+  };
+
+  const realtimeTextStyle: React.CSSProperties = {
+    color: '#666',
+    fontStyle: 'italic',
+  };
+
+  const correctedTextStyle: React.CSSProperties = {
+    color: '#222',
+    fontWeight: '400',
+  };
+
+  const labelStyle: React.CSSProperties = {
+    fontSize: '12px',
+    color: '#999',
+    textTransform: 'uppercase',
+    marginBottom: '5px',
+  };
+
+  const errorStyle: React.CSSProperties = {
+    background: '#f8f8f8',
+    color: '#666',
+    padding: '10px',
+    borderRadius: '4px',
+    marginBottom: '20px',
+    border: '1px solid #ddd',
+  };
+
+  // Convert Float32Array to base64-encoded PCM16
+  const convertToPCM16Base64 = (float32Array: Float32Array): string => {
+    const int16Array = new Int16Array(float32Array.length);
+    for (let i = 0; i < float32Array.length; i++) {
+      const s = Math.max(-1, Math.min(1, float32Array[i]));
+      int16Array[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    }
+    
+    const uint8Array = new Uint8Array(int16Array.buffer);
+    let binary = '';
+    for (let i = 0; i < uint8Array.length; i++) {
+      binary += String.fromCharCode(uint8Array[i]);
+    }
+    return btoa(binary);
+  };
+
+  const connectToServer = () => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.close();
+      setIsConnected(false);
+      setStatus('Disconnected');
+      return;
+    }
+
+    const ws = new WebSocket('ws://localhost:8888');
+    wsRef.current = ws;
+    
+    ws.onopen = () => {
+      console.log('WebSocket connected to backend');
+      setStatus('Connected');
+      setIsConnected(true);
+      setError('');
+    };
+    
+    ws.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        console.log('Message received from backend:', message);
+        
+        switch (message.type) {
+          case 'status':
+            console.log('Status message:', message.message);
+            break;
+            
+          case 'realtime_transcription':
+            // Handle real-time transcription
+            console.log('====== REALTIME TRANSCRIPTION RECEIVED ======');
+            console.log('Text:', message.text);
+            console.log('Full message:', message);
+            if (message.text) {
+              setRealtimeTranscription(prev => prev ? prev + ' ' + message.text : message.text);
+            }
+            break;
+            
+          case 'corrected_transcription':
+            // Handle corrected/batch transcription
+            console.log('====== CORRECTED TRANSCRIPTION RECEIVED ======');
+            console.log('Text:', message.text);
+            console.log('ChunkId:', message.chunkId);
+            console.log('Timestamp:', message.timestamp);
+            console.log('Full message:', message);
+            if (message.text) {
+              // Store chunk with its ID for proper ordering
+              transcriptionChunks.current.set(message.chunkId, message.text);
+              
+              // Rebuild the full corrected transcription from all chunks
+              const sortedChunks = Array.from(transcriptionChunks.current.entries())
+                .sort((a, b) => a[0] - b[0])
+                .map(entry => entry[1]);
+              
+              setCorrectedTranscription(sortedChunks.join(' '));
+              console.log('Updated corrected transcription:', sortedChunks.join(' '));
+            }
+            break;
+            
+          // Handle legacy format for backward compatibility
+          case 'transcription':
+            console.log('====== LEGACY TRANSCRIPTION FORMAT RECEIVED ======');
+            console.log('Full message:', message);
+            if (message.data?.text) {
+              console.log('Text from data.text:', message.data.text);
+              setRealtimeTranscription(prev => prev ? prev + ' ' + message.data.text : message.data.text);
+            } else if (message.text) {
+              console.log('Text from message.text:', message.text);
+              setRealtimeTranscription(prev => prev ? prev + ' ' + message.text : message.text);
+            }
+            break;
+            
+          case 'error':
+            console.error('Error from backend:', message.message);
+            setError(message.message);
+            break;
+            
+          case 'closed':
+            console.log('Connection closed:', message.reason);
+            setStatus('Disconnected');
+            setIsConnected(false);
+            break;
+            
+          default:
+            console.log('Unknown message type:', message.type, message);
+        }
+      } catch (err) {
+        console.error('Error parsing message:', err);
+      }
+    };
+    
+    ws.onerror = (error) => {
+      setError('Connection error');
+      setIsConnected(false);
+    };
+    
+    ws.onclose = () => {
+      setStatus('Disconnected');
+      setIsConnected(false);
+    };
+  };
+
+  const stopRecording = () => {
+    if (!isRecording) return;
+
+    setIsRecording(false);
+
+    if (scriptProcessorNodeRef.current && sourceNodeRef.current) {
+      scriptProcessorNodeRef.current.disconnect();
+      sourceNodeRef.current.disconnect();
+    }
+
+    scriptProcessorNodeRef.current = null;
+    sourceNodeRef.current = null;
+
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = undefined;
+    }
+  };
+
+  const startRecording = async () => {
+    if (isRecording || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    inputAudioContextRef.current.resume();
+
+    try {
+      mediaStreamRef.current = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          sampleRate: 16000,
+          echoCancellation: true,
+          noiseSuppression: true
+        },
+        video: false,
+      });
+
+      sourceNodeRef.current = inputAudioContextRef.current.createMediaStreamSource(
+        mediaStreamRef.current,
+      );
+
+      const bufferSize = 4096;
+      scriptProcessorNodeRef.current = inputAudioContextRef.current.createScriptProcessor(
+        bufferSize,
+        1,
+        1,
+      );
+      
+      setIsRecording(true);
+
+      scriptProcessorNodeRef.current.onaudioprocess = (audioProcessingEvent) => {
+        const inputBuffer = audioProcessingEvent.inputBuffer;
+        const pcmData = inputBuffer.getChannelData(0);
+        const base64Audio = convertToPCM16Base64(pcmData);
+        
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({
+            type: 'audio',
+            audio: base64Audio
+          }));
+        }
+      };
+
+      sourceNodeRef.current.connect(scriptProcessorNodeRef.current);
+      scriptProcessorNodeRef.current.connect(inputAudioContextRef.current.destination);
+
+    } catch (err: any) {
+      setError(`Error: ${err.message}`);
+      stopRecording();
+    }
+  };
+
+  const toggleRecording = () => {
+    if (isRecording) {
+      stopRecording();
+    } else {
+      startRecording();
+    }
+  };
+
+  const clearTranscription = () => {
+    setRealtimeTranscription('');
+    setCorrectedTranscription('');
+    transcriptionChunks.current.clear();
+  };
+
+  return (
+    <div style={containerStyle}>
+      <h1 style={titleStyle}>Audio Transcription</h1>
+      
+      <div style={statusStyle}>Status: {status}</div>
+      
+      {error && <div style={errorStyle}>{error}</div>}
+
+      <div style={buttonRowStyle}>
+        <button onClick={connectToServer} style={buttonStyle}>
+          {isConnected ? 'Disconnect' : 'Connect'}
+        </button>
+        <button onClick={clearTranscription} style={buttonStyle}>
+          Clear
+        </button>
+      </div>
+
+      <button 
+        onClick={toggleRecording} 
+        disabled={!isConnected}
+        style={recordButtonStyle}
+      >
+        {isRecording ? 'Stop' : 'Record'}
+      </button>
+
+      <div style={transcriptionContainerStyle}>
+        <div style={tabStyle}>
+          <button 
+            onClick={() => setShowRealtime(true)} 
+            style={tabButtonStyle(showRealtime)}
+          >
+            Real-time (Fast)
+          </button>
+          <button 
+            onClick={() => setShowRealtime(false)} 
+            style={tabButtonStyle(!showRealtime)}
+          >
+            Corrected (Accurate)
+          </button>
+        </div>
+        
+        <div style={transcriptionBoxStyle}>
+          {showRealtime ? (
+            <div>
+              <div style={labelStyle}>Real-time Transcription</div>
+              <div style={realtimeTextStyle}>
+                {realtimeTranscription || 'Real-time transcription will appear here...'}
+              </div>
+            </div>
+          ) : (
+            <div>
+              <div style={labelStyle}>Corrected Transcription (3-second batches)</div>
+              <div style={correctedTextStyle}>
+                {correctedTranscription || 'Corrected transcription will appear here after 3 seconds of audio...'}
+              </div>
+            </div>
+          )}
+        </div>
+        
+        {isRecording && (
+          <div style={{ marginTop: '10px', fontSize: '12px', color: '#999', textAlign: 'center' }}>
+            Audio is being processed in real-time and in 3-second batches for improved accuracy
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default GdmLiveAudioSecure;
