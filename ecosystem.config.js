@@ -1,7 +1,7 @@
 module.exports = {
   apps: [
     {
-      name: 'backend',
+      name: 'gemini-audio-app',
       script: 'server.js',
       cwd: './backend',
       interpreter: 'bun',
@@ -14,18 +14,6 @@ module.exports = {
       autorestart: true,
       watch: false,
       max_memory_restart: '1G'
-    },
-    {
-      name: 'frontend',
-      script: 'bun',
-      args: 'run dev',
-      cwd: './frontend',
-      env: {
-        NODE_ENV: 'development'
-      },
-      instances: 1,
-      autorestart: true,
-      watch: false
     }
   ]
 };
