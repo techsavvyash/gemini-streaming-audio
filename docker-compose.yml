@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  gemini-streaming-audio:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Pass frontend environment variables as build args
+        - VITE_WS_URL=${VITE_WS_URL}
+    ports:
+      - "${PORT:-3001}:${PORT:-3001}"
+      - "${WS_PORT:-3002}:${WS_PORT:-3002}"
+    environment:
+      # Backend environment variables
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - PORT=${PORT}
+      - WS_PORT=${WS_PORT}
+      # Frontend environment variables (for build time)
+      - VITE_WS_URL=${VITE_WS_URL}
+      - REACT_APP_GEMINI_API_KEY=${REACT_APP_GEMINI_API_KEY}
+    env_file:
+      - backend/.env
+    volumes:
+      - ./backend/audio_samples:/app/backend/audio_samples
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${PORT:-3001}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

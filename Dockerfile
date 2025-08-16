@@ -16,10 +16,19 @@ RUN cd frontend && bun install
 # Build frontend stage
 FROM base AS frontend-builder
 WORKDIR /app
+
+# Accept build arguments for frontend environment variables
+ARG VITE_WS_URL
+ARG REACT_APP_GEMINI_API_KEY
+
+# Set environment variables for build
+ENV VITE_WS_URL=$VITE_WS_URL
+ENV REACT_APP_GEMINI_API_KEY=$REACT_APP_GEMINI_API_KEY
+
 COPY frontend/ ./frontend/
 COPY --from=deps /app/frontend/node_modules ./frontend/node_modules
 
-# Build frontend
+# Build frontend with environment variables
 RUN cd frontend && bun run build
 
 # Production stage
@@ -30,7 +39,7 @@ WORKDIR /app
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nodejs
 
-# Copy backend dependencies
+# Copy backend dependencies and environment files
 COPY --from=deps /app/backend/node_modules ./backend/node_modules
 COPY backend/ ./backend/
 
@@ -44,15 +53,13 @@ RUN chown nodejs:nodejs /app/backend/audio_samples
 # Switch to non-root user
 USER nodejs
 
-# Expose ports
-EXPOSE 3011 8888
+# Expose ports - Railway will assign PORT dynamically  
+# Default ports, but Railway will override with environment variables
+EXPOSE 3001 3002
 
 # Set working directory to backend
 WORKDIR /app/backend
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:3011/ || exit 1
 
 # Start the server
 CMD ["bun", "run", "start"]
