@@ -6,7 +6,9 @@
     "start": "node server.js",
     "dev": "nodemon server.js",
     "build": "cd ../frontend && bun run build",
-    "build:start": "bun run build && bun run start"
+    "build:start": "bun run build && bun run start",
+    "test": "node tests/test-gemini-api.js",
+    "test:watch": "nodemon --exec 'node tests/test-gemini-api.js' --watch tests/"
   },
   "dependencies": {
     "@google/genai": "^1.14.0",

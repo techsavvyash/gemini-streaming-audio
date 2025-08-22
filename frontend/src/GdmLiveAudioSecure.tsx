@@ -8,6 +8,8 @@ const GdmLiveAudioSecure: React.FC = () => {
   const [realtimeTranscription, setRealtimeTranscription] = useState('');
   const [correctedTranscription, setCorrectedTranscription] = useState('');
   const [showRealtime, setShowRealtime] = useState(true);
+  const [recordedAudioBlob, setRecordedAudioBlob] = useState<Blob | null>(null);
+  const [recordingDuration, setRecordingDuration] = useState(0);
   
   const wsRef = useRef<WebSocket | null>(null);
   const inputAudioContextRef = useRef(new (window.AudioContext ||
@@ -16,6 +18,9 @@ const GdmLiveAudioSecure: React.FC = () => {
   const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const scriptProcessorNodeRef = useRef<ScriptProcessorNode | null>(null);
   const transcriptionChunks = useRef<Map<number, string>>(new Map());
+  const recordingStartTimeRef = useRef<number>(0);
+  const recordingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const audioChunksRef = useRef<Float32Array[]>([]);
 
   // Styles - Simple greyscale
   const containerStyle: React.CSSProperties = {
@@ -285,6 +290,19 @@ const GdmLiveAudioSecure: React.FC = () => {
     if (!isRecording) return;
 
     setIsRecording(false);
+    
+    // Stop recording timer
+    if (recordingIntervalRef.current) {
+      clearInterval(recordingIntervalRef.current);
+      recordingIntervalRef.current = null;
+    }
+
+    // Convert recorded audio to WAV and store
+    if (audioChunksRef.current.length > 0) {
+      const wavBlob = convertToWAV(audioChunksRef.current);
+      setRecordedAudioBlob(wavBlob);
+      console.log(`Recording completed: ${formatDuration(recordingDuration)}`);
+    }
 
     if (scriptProcessorNodeRef.current && sourceNodeRef.current) {
       scriptProcessorNodeRef.current.disconnect();
@@ -330,11 +348,20 @@ const GdmLiveAudioSecure: React.FC = () => {
       );
       
       setIsRecording(true);
+      
+      // Start recording timer
+      recordingStartTimeRef.current = Date.now();
+      recordingIntervalRef.current = setInterval(() => {
+        setRecordingDuration((Date.now() - recordingStartTimeRef.current) / 1000);
+      }, 100);
 
       scriptProcessorNodeRef.current.onaudioprocess = (audioProcessingEvent) => {
         const inputBuffer = audioProcessingEvent.inputBuffer;
         const pcmData = inputBuffer.getChannelData(0);
         const base64Audio = convertToPCM16Base64(pcmData);
+        
+        // Store audio chunks for recording
+        audioChunksRef.current.push(new Float32Array(pcmData));
         
         if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
           wsRef.current.send(JSON.stringify({
@@ -365,6 +392,80 @@ const GdmLiveAudioSecure: React.FC = () => {
     setRealtimeTranscription('');
     setCorrectedTranscription('');
     transcriptionChunks.current.clear();
+    setRecordedAudioBlob(null);
+    setRecordingDuration(0);
+    audioChunksRef.current = [];
+  };
+
+  // Convert Float32Array to WAV format
+  const convertToWAV = (audioChunks: Float32Array[], sampleRate: number = 16000): Blob => {
+    const totalLength = audioChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    const audioBuffer = new Float32Array(totalLength);
+    
+    let offset = 0;
+    for (const chunk of audioChunks) {
+      audioBuffer.set(chunk, offset);
+      offset += chunk.length;
+    }
+    
+    // Convert to 16-bit PCM
+    const pcm16 = new Int16Array(audioBuffer.length);
+    for (let i = 0; i < audioBuffer.length; i++) {
+      const s = Math.max(-1, Math.min(1, audioBuffer[i]));
+      pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    }
+    
+    // Create WAV file
+    const wavBuffer = new ArrayBuffer(44 + pcm16.length * 2);
+    const view = new DataView(wavBuffer);
+    
+    // WAV header
+    const writeString = (offset: number, string: string) => {
+      for (let i = 0; i < string.length; i++) {
+        view.setUint8(offset + i, string.charCodeAt(i));
+      }
+    };
+    
+    writeString(0, 'RIFF');
+    view.setUint32(4, 36 + pcm16.length * 2, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeString(36, 'data');
+    view.setUint32(40, pcm16.length * 2, true);
+    
+    // Audio data
+    const pcm8 = new Uint8Array(pcm16.buffer);
+    for (let i = 0; i < pcm8.length; i++) {
+      view.setUint8(44 + i, pcm8[i]);
+    }
+    
+    return new Blob([wavBuffer], { type: 'audio/wav' });
+  };
+
+  const downloadAudio = () => {
+    if (recordedAudioBlob) {
+      const url = URL.createObjectURL(recordedAudioBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `recording_${new Date().toISOString().replace(/[:.]/g, '-')}.wav`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+  };
+
+  const formatDuration = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
   return (
@@ -382,6 +483,11 @@ const GdmLiveAudioSecure: React.FC = () => {
         <button onClick={clearTranscription} style={buttonStyle}>
           Clear
         </button>
+        {recordedAudioBlob && (
+          <button onClick={downloadAudio} style={buttonStyle}>
+            Download WAV
+          </button>
+        )}
       </div>
 
       <button 
@@ -391,6 +497,18 @@ const GdmLiveAudioSecure: React.FC = () => {
       >
         {isRecording ? 'Stop' : 'Record'}
       </button>
+      
+      {isRecording && (
+        <div style={{ marginBottom: '20px', fontSize: '16px', color: '#666' }}>
+          Recording: {formatDuration(recordingDuration)}
+        </div>
+      )}
+      
+      {recordedAudioBlob && (
+        <div style={{ marginBottom: '20px', fontSize: '14px', color: '#666' }}>
+          Last recording: {formatDuration(recordingDuration)} - Ready for download
+        </div>
+      )}
 
       <div style={transcriptionContainerStyle}>
         <div style={tabStyle}>

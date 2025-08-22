@@ -3,8 +3,7 @@ import cors from 'cors';
 import { GoogleGenAI, Modality } from '@google/genai';
 import WebSocket, { WebSocketServer } from 'ws';
 import dotenv from 'dotenv';
-import pkg from 'wavefile';
-const { WaveFile } = pkg;
+
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -54,36 +53,42 @@ if (!fs.existsSync(audioDir)) {
   console.log('Created audio_samples directory');
 }
 
-// Helper function to convert base64 PCM to WAV format using wavefile library
-function createWAVFromPCM(pcmBase64Data, sampleRate = 16000, saveFilename = null) {
+
+
+
+// Simple and reliable WAV creation function
+function createWAVFromPCM(pcmBase64Data, sampleRate = 16000) {
   try {
     // Decode base64 to binary
     const pcmData = Buffer.from(pcmBase64Data, 'base64');
     
-    // Convert PCM buffer to Int16Array (16-bit samples)
-    const samples = new Int16Array(pcmData.buffer, pcmData.byteOffset, pcmData.length / 2);
+    // Create WAV header (44 bytes)
+    const wavHeader = Buffer.alloc(44);
     
-    // Create a new WaveFile instance
-    const wav = new WaveFile();
+    // RIFF header
+    wavHeader.write('RIFF', 0);
+    wavHeader.writeUInt32LE(36 + pcmData.length, 4);
+    wavHeader.write('WAVE', 8);
     
-    // Set the WAV file from the samples
-    wav.fromScratch(1, sampleRate, '16', samples);
+    // fmt chunk
+    wavHeader.write('fmt ', 12);
+    wavHeader.writeUInt32LE(16, 16); // fmt chunk size
+    wavHeader.writeUInt16LE(1, 20);  // audio format (PCM)
+    wavHeader.writeUInt16LE(1, 22);  // channels (mono)
+    wavHeader.writeUInt32LE(sampleRate, 24); // sample rate
+    wavHeader.writeUInt32LE(sampleRate * 2, 28); // byte rate
+    wavHeader.writeUInt16LE(2, 32);  // block align
+    wavHeader.writeUInt16LE(16, 34); // bits per sample
     
-    // Get WAV buffer
-    const wavBuffer = wav.toBuffer();
+    // data chunk
+    wavHeader.write('data', 36);
+    wavHeader.writeUInt32LE(pcmData.length, 40);
     
-    // Save to file if filename provided
-    if (saveFilename) {
-      const filepath = path.join(audioDir, saveFilename);
-      fs.writeFileSync(filepath, wavBuffer);
-      console.log(`WAV file saved: ${filepath}`);
-      console.log(`  - Duration: ~${samples.length / sampleRate} seconds`);
-      console.log(`  - Samples: ${samples.length}`);
-      console.log(`  - Size: ${wavBuffer.length} bytes`);
-    }
+    // Combine header + audio data
+    const wavBuffer = Buffer.concat([wavHeader, pcmData]);
     
-    // Return as base64
-    return Buffer.from(wavBuffer).toString('base64');
+    // Return as base64 (no file saving)
+    return wavBuffer.toString('base64');
   } catch (error) {
     console.error('Error creating WAV file:', error);
     throw error;
@@ -117,39 +122,47 @@ wss.on('connection', async (ws) => {
     audioBuffer = [];
     
     try {
-      // Combine all audio chunks
-      const combinedPCMBase64 = currentBuffer.join('');
+      // Combine all audio chunks properly
+      // Decode each base64 chunk to binary, concatenate, then re-encode
+      const audioBuffers = currentBuffer.map(chunk => Buffer.from(chunk, 'base64'));
+      const combinedBuffer = Buffer.concat(audioBuffers);
+      const combinedPCMBase64 = combinedBuffer.toString('base64');
       
-      // Generate filename with timestamp
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const filename = `batch_${currentChunkId}_${timestamp}.wav`;
-      
-      // Convert PCM to WAV format and save to file
-      const wavBase64 = createWAVFromPCM(combinedPCMBase64, 16000, filename);
-      
-      // Use the generateContent method directly on ai.models
-      const result = await ai.models.generateContent({
-        model: batchModel,
-        contents: [
-          {
-            parts: [
-              {
-                text: "Transcribe this audio accurately. Only return the transcription text, nothing else."
-              },
-              {
-                inlineData: {
-                  mimeType: "audio/wav",
-                  data: wavBase64
+              console.log(`🔧 Audio processing: ${currentBuffer.length} chunks → ${combinedBuffer.length} bytes → ${combinedPCMBase64.length} base64 chars`);
+        
+        // Convert PCM to WAV format (no file saving needed)
+        const wavBase64 = createWAVFromPCM(combinedPCMBase64, 16000);
+        
+        // Use the generateContent method through ai.models
+        const result = await ai.models.generateContent({
+          model: batchModel,
+          contents: [
+            {
+              parts: [
+                {
+                  text: "Transcribe this audio accurately. Only return the actual spoken words you can clearly hear. If the audio is unclear or contains only noise, respond with 'unclear audio'. Do not return random characters, repeated letters, or made-up words. Only return meaningful transcription."
+                },
+                {
+                  inlineData: {
+                    mimeType: "audio/wav",
+                    data: wavBase64
+                  }
                 }
-              }
-            ]
-          }
-        ]
-      });
+              ]
+            }
+          ]
+        });
       
-      const transcriptionText = result.text;
+      const transcriptionText = result.candidates[0].content.parts[0].text;
       
-      if (transcriptionText) {
+      // Send the transcription (Gemini should handle filtering via prompt)
+      if (transcriptionText && transcriptionText.trim().length > 0) {
+        // Filter out "unclear audio" responses
+        if (transcriptionText.toLowerCase().includes('unclear audio')) {
+          console.log('⚠️  Filtering out "unclear audio" response');
+          return;
+        }
+        
         const correctedData = { 
           type: 'corrected_transcription', 
           text: transcriptionText.trim(),
@@ -158,7 +171,9 @@ wss.on('connection', async (ws) => {
         };
         
         ws.send(JSON.stringify(correctedData));
-        console.log('CORRECTED transcription sent (via standard API):', correctedData);
+        console.log('✅ CORRECTED transcription sent (via standard API):', correctedData);
+      } else {
+        console.log('⚠️  Empty transcription received, skipping');
       }
       
     } catch (error) {
@@ -173,18 +188,21 @@ wss.on('connection', async (ws) => {
 
   try {
     // Initialize real-time Gemini Live session
+    console.log(`🔄 Attempting to connect to Gemini Live with model: ${liveModel}`);
     realtimeSession = await ai.live.connect({
       model: liveModel,
       callbacks: {
         onopen: () => {
-          console.log('Real-time Gemini session connected');
-          ws.send(JSON.stringify({ type: 'status', message: 'Connected to Gemini' }));
+          console.log('✅ Real-time Gemini session connected successfully');
+          ws.send(JSON.stringify({ type: 'status', message: 'Connected to Gemini Live' }));
           
           // Start batch processing interval (every 3 seconds)
           batchInterval = setInterval(processBatchAudio, 3000);
-          console.log('Started batch processing interval (every 3 seconds)');
+          console.log('🔄 Started batch processing interval (every 3 seconds)');
         },
         onmessage: (message) => {
+          console.log('📨 Received message from Gemini Live:', JSON.stringify(message, null, 2));
+          
           // Send real-time transcription immediately
           if (message.serverContent && message.serverContent.inputTranscription) {
             const transcriptionText = message.serverContent.inputTranscription.text;
@@ -195,14 +213,18 @@ wss.on('connection', async (ws) => {
               text: transcriptionText
             };
             ws.send(JSON.stringify(realtimeData));
-            console.log('REALTIME transcription sent:', realtimeData);
+            console.log('✅ REALTIME transcription sent:', realtimeData);
+          } else {
+            console.log('⚠️  Message structure unexpected - no inputTranscription found');
           }
         },
         onerror: (error) => {
-          console.error('Real-time session error:', error);
+          console.error('❌ Real-time session error:', error);
+          console.error('Error details:', JSON.stringify(error, null, 2));
           ws.send(JSON.stringify({ type: 'error', message: error.message }));
         },
         onclose: (event) => {
+          console.log('🔌 Real-time session closed:', event.reason);
           ws.send(JSON.stringify({ type: 'closed', reason: event.reason }));
           
           // Clear batch interval
@@ -214,13 +236,19 @@ wss.on('connection', async (ws) => {
       },
       config: {
         responseModalities: [Modality.TEXT],
-        inputAudioTranscription: {}
+        inputAudioTranscription: {
+          model: 'default'  // Explicitly specify transcription model
+        }
       }
     });
     
+    console.log('✅ Gemini Live session initialized successfully');
+    
   } catch (error) {
-    console.error('Failed to connect to Gemini:', error);
-    ws.send(JSON.stringify({ type: 'error', message: 'Failed to connect to Gemini: ' + error.message }));
+    console.error('❌ Failed to connect to Gemini Live:', error);
+    console.error('Error details:', error.message);
+    console.error('Stack trace:', error.stack);
+    ws.send(JSON.stringify({ type: 'error', message: 'Failed to connect to Gemini Live: ' + error.message }));
   }
 
   // Handle messages from client
@@ -232,19 +260,29 @@ wss.on('connection', async (ws) => {
       if (data.type === 'audio' && realtimeSession) {
         audioChunkCount++;
         if (audioChunkCount % 10 === 0) {
-          console.log(`Received ${audioChunkCount} audio chunks so far`);
+          console.log(`📊 Received ${audioChunkCount} audio chunks so far`);
         }
         
         // Add to buffer for batch processing
         audioBuffer.push(data.audio);
         
-        // Send to real-time session for immediate feedback
-        await realtimeSession.sendRealtimeInput({
-          audio: {
-            data: data.audio,
-            mimeType: "audio/pcm;rate=16000"
+        try {
+          // Send to real-time session for immediate feedback
+          await realtimeSession.sendRealtimeInput({
+            audio: {
+              data: data.audio,
+              mimeType: "audio/pcm;rate=16000"
+            }
+          });
+          
+          if (audioChunkCount === 1) {
+            console.log('🎵 First audio chunk sent to Gemini Live successfully');
           }
-        });
+        } catch (audioError) {
+          console.error('❌ Error sending audio to Gemini Live:', audioError);
+        }
+      } else if (data.type === 'audio' && !realtimeSession) {
+        console.log('⚠️  Received audio but no real-time session available');
       } else if (data.type === 'text' && realtimeSession) {
         // Handle text input if needed
         await realtimeSession.sendRealtimeInput({
@@ -258,11 +296,12 @@ wss.on('connection', async (ws) => {
   });
 
   ws.on('close', () => {
-    console.log('Client disconnected');
+    console.log('🔌 Client disconnected');
     
-    // Process any remaining audio
+    // Don't process incomplete audio - it could be corrupted
     if (audioBuffer.length > 0) {
-      processBatchAudio();
+      console.log(`⚠️  Discarding ${audioBuffer.length} incomplete audio chunks`);
+      audioBuffer = [];
     }
     
     // Clear batch interval
@@ -271,10 +310,9 @@ wss.on('connection', async (ws) => {
       batchInterval = null;
     }
     
-    // Close session
-    if (realtimeSession) {
-      realtimeSession.close();
-    }
+    // Let Gemini Live session handle its own cleanup
+    // Don't force close it here to avoid race conditions
+    console.log('🔄 WebSocket connection closed, resources cleaned up');
   });
 
   ws.on('error', (error) => {
