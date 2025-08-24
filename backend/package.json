@@ -4,7 +4,9 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "nodemon server.js",
+    "build": "cd ../frontend && bun run build",
+    "build:start": "bun run build && bun run start"
   },
   "dependencies": {
     "@google/genai": "^1.14.0",

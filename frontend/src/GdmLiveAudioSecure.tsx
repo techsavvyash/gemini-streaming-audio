@@ -157,7 +157,37 @@ const GdmLiveAudioSecure: React.FC = () => {
       return;
     }
 
-    const ws = new WebSocket('ws://localhost:8888');
+    // Multiple fallback strategies for WebSocket URL
+    // Priority: 1) VITE_WS_URL env var, 2) Build-time __WS_URL__, 3) Default to 8888 (server port)
+    // IMPORTANT: Ensure Railway URL takes precedence and no fallback to localhost
+    const envWsUrl = import.meta.env.VITE_WS_URL;
+    const buildTimeUrl = typeof __WS_URL__ !== 'undefined' ? __WS_URL__ : '';
+    
+    let socketUrl;
+    if (envWsUrl) {
+      socketUrl = envWsUrl;
+      console.log('Using environment variable VITE_WS_URL:', envWsUrl);
+    } else if (buildTimeUrl) {
+      socketUrl = buildTimeUrl;
+      console.log('Using build-time __WS_URL__:', buildTimeUrl);
+    } else {
+      // Only fallback to localhost if no Railway URL is configured
+      socketUrl = `ws://${window.location.hostname}:8888`;
+      console.log('Falling back to localhost WebSocket');
+    }
+      
+    console.log('=== WebSocket Connection Debug ===');
+    console.log('Connecting to server:', socketUrl);
+    console.log('Available environment variables:', {
+      VITE_WS_URL: import.meta.env.VITE_WS_URL,
+      __WS_URL__: typeof __WS_URL__ !== 'undefined' ? __WS_URL__ : 'undefined',
+      hostname: window.location.hostname
+    });
+    console.log('Expected Railway URL: wss://crossover.proxy.rlwy.net:15510');
+    console.log('URL matches Railway?', socketUrl === 'wss://crossover.proxy.rlwy.net:15510');
+    console.log('=== End Debug ===');
+    
+    const ws = new WebSocket(socketUrl);
     wsRef.current = ws;
     
     ws.onopen = () => {

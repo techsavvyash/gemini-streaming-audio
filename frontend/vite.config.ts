@@ -9,6 +9,11 @@ export default defineConfig({
     open: true
   },
   define: {
-    'process.env': {}
+    'process.env': {},
+    // Require WebSocket URL from environment variable - no defaults
+    __WS_URL__: JSON.stringify(process.env.VITE_WS_URL || (() => {
+      console.error('ERROR: VITE_WS_URL environment variable is required');
+      process.exit(1);
+    })())
   }
 })
