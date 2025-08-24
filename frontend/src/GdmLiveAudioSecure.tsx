@@ -19,7 +19,7 @@ const GdmLiveAudioSecure: React.FC = () => {
   const scriptProcessorNodeRef = useRef<ScriptProcessorNode | null>(null);
   const transcriptionChunks = useRef<Map<number, string>>(new Map());
   const recordingStartTimeRef = useRef<number>(0);
-  const recordingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const recordingIntervalRef = useRef<number | null>(null);
   const audioChunksRef = useRef<Float32Array[]>([]);
 
   // Styles - Simple greyscale
