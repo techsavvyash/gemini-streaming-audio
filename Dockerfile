@@ -7,7 +7,7 @@ WORKDIR /app
 
 # Copy package files
 COPY backend/package*.json backend/bun.lock ./backend/
-COPY frontend/package*.json frontend/bun.lockb ./frontend/
+COPY frontend/package*.json ./frontend/
 
 # Install dependencies
 RUN cd backend && bun install
